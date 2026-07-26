@@ -63,6 +63,9 @@ input int      InpLevelGridLevels          = 6;           // Yeni cift yonlu ara
 input int      InpLevelGridStepPoints      = 120;         // Yeni cift yonlu grid adim araligi (puan)
 input double   InpLevelGridLotMultiplier   = 1.2;         // Yeni cift yonlu grid lot carpani
 input int      InpLevelCooldownSec         = 5;           // Hasat sonrasi yeni ara grid kurma beklemesi (sn)
+input int      InpMaxHarvestCycles         = 3;           // Ayni sepette azami hasat sayisi (0 = sinirsiz) [ZARAR FRENI]
+input double   InpMaxBasketDDForSubGrid    = 25.0;        // Sepet acik zarari bu $ degerini gecerse YENI alt grid ACMA (0 = kapali)
+input bool     InpCountRealizedInBasket    = true;        // Hasat edilen realize kari sepet hedef/stop hesabina KAT
 
 input group "=== DIGER ==="
 input bool     InpUseTrailingStop          = false;       // Bireysel trailing (kapali - rezerve)
@@ -118,6 +121,7 @@ double   pendingSubCloseProfit   = 0.0;
 bool     levelGridDeployed       = false;   // alt grid su an ekranda kurulu mu
 datetime nextLevelAttempt        = 0;
 int      harvestCycleCount       = 0;       // kac kez bagimsiz hasat yapildi
+double   realizedCycleProfit     = 0.0;     // bu sepet dongusunde hasattan REALIZE edilen toplam kar
 long     subMagic                = 77778;   // dogrulanmis alt grid magic
 
 //+------------------------------------------------------------------+
@@ -629,6 +633,7 @@ void ResetAllVariables()
    levelGridDeployed   = false;
    nextLevelAttempt    = 0;
    harvestCycleCount   = 0;
+   realizedCycleProfit = 0.0;
    subCloseRequested   = false;
    nextSubCloseAttempt = 0;
 }
@@ -688,6 +693,7 @@ bool ProcessSubGridClose(const SGridState &st)
    if(st.subPositions == 0 && st.subOrders == 0)
    {
       harvestCycleCount++;
+      realizedCycleProfit += pendingSubCloseProfit;
       Notify(StringFormat("%d. BAGIMSIZ HASAT TAMAM | Alt grid kari: +$%.2f | Ana grid (%d pozisyon / %d bekleyen emir) korundu.",
                           harvestCycleCount, pendingSubCloseProfit, st.mainPositions, st.mainOrders));
       subCloseRequested = false;
@@ -741,6 +747,16 @@ bool CheckAndDeployAdaptiveLevelGrid(const SGridState &st)
    if(levelGridDeployed)         return false;
    if(st.subOrders > 0)          return false;
    if(st.subPositions > 0)       return false;
+
+   // FREN 1: Ayni sepette sinirsiz hasat = trendde sonsuz zarar buyutme.
+   // Her hasat kucuk kar realize ederken ana grid zarari daha cok buyuyorsa dur.
+   if(InpMaxHarvestCycles > 0 && harvestCycleCount >= InpMaxHarvestCycles)
+      return false;
+
+   // FREN 2: Sepet acik zarari cok buyudukten sonra yeni grid eklemek
+   // riski katlar (martingale etkisi). Belirli drawdown ustunde yeni grid acma.
+   if(InpMaxBasketDDForSubGrid > 0.0 && st.basketProfit <= -InpMaxBasketDDForSubGrid)
+      return false;
 
    bool levelReached = (st.buyPositions  >= InpLevelTriggerCount ||
                         st.sellPositions >= InpLevelTriggerCount ||
@@ -807,7 +823,10 @@ void CheckBasketProfitAndReset(const SGridState &st)
       return;
    }
 
+   // KRITIK: hasatla realize edilen kar sepet hesabina katilmazsa, EA kar ettigini
+   // sanip acik zarari buyutmeye devam eder. Gercek sepet sonucu = realize + acik.
    double totalProfit = st.basketProfit;
+   if(InpCountRealizedInBasket) totalProfit += realizedCycleProfit;
    if(totalProfit > highestBasketProfit) highestBasketProfit = totalProfit;
    if(totalProfit < lowestBasketProfit)  lowestBasketProfit  = totalProfit;
 
